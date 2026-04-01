@@ -1,4 +1,8 @@
 const std = @import("std");
+
+const Icon = @import("./root.zig").Icon;
+const getHIcon = @import("./windows.zig").getHIcon;
+
 const windows = @import("windows");
 const win32 = windows.win32;
 
@@ -230,75 +234,11 @@ pub const Button = struct {
     };
 };
 
-pub const Icon = union(enum) {
-    symbol: Symbol,
-    custom: []const u8,
-
-    pub fn getHIcon(self: @This()) ?HICON {
-        switch (self) {
-            .custom => |path| {
-                // Buffer of longest allowed windows path
-                var buffer: [260:0]u16 = std.mem.zeroes([260:0]u16);
-                _ = std.unicode.utf8ToUtf16Le(&buffer, path) catch 0;
-                return @ptrCast(win32.ui.windows_and_messaging.LoadImageW(
-                    null,
-                    &buffer,
-                    .ICON,
-                    16,
-                    16,
-                    .{ .LOADFROMFILE = 1, .LOADTRANSPARENT = 1 },
-                ));
-            },
-            .symbol => |symbol| {
-                const path = switch (symbol) {
-                    .application => win32.ui.windows_and_messaging.IDI_APPLICATION,
-                    .hand => win32.ui.windows_and_messaging.IDI_HAND,
-                    .question => win32.ui.windows_and_messaging.IDI_QUESTION,
-                    .exclamation => win32.ui.windows_and_messaging.IDI_EXCLAMATION,
-                    .asterisk => win32.ui.windows_and_messaging.IDI_ASTERISK,
-                    .winlogo => win32.ui.windows_and_messaging.IDI_WINLOGO,
-                    .shield => win32.ui.windows_and_messaging.IDI_SHIELD,
-                    .warning => @as([*:0]align(1) const u16, @ptrFromInt(@as(usize, @intCast(win32.ui.windows_and_messaging.IDI_WARNING)))),
-                    .@"error" => @as([*:0]align(1) const u16, @ptrFromInt(@as(usize, @intCast(win32.ui.windows_and_messaging.IDI_ERROR)))),
-                    .information => @as([*:0]align(1) const u16, @ptrFromInt(@as(usize, @intCast(win32.ui.windows_and_messaging.IDI_INFORMATION)))),
-                };
-                return @ptrCast(win32.ui.windows_and_messaging.LoadImageW(null, path, .ICON, 16, 16, LR_SHARED));
-            },
-        }
-    }
-
-    pub const Symbol = enum {
-        application,
-        hand,
-        question,
-        exclamation,
-        asterisk,
-        winlogo,
-        shield,
-        warning,
-        @"error",
-        information,
-    };
-
-    pub const Application: @This() = .{ .icon = .application };
-    pub const Hand: @This() = .{ .icon = .hand };
-    pub const Question: @This() = .{ .icon = .question };
-    pub const Exclamation: @This() = .{ .icon = .exclamation };
-    pub const Asterisk: @This() = .{ .icon = .asterisk };
-    pub const Winlogo: @This() = .{ .icon = .winlogo };
-    pub const Shield: @This() = .{ .icon = .shield };
-    pub const Warning: @This() = .{ .icon = .warning };
-    pub const Error: @This() = .{ .icon = .@"error" };
-    pub const Information: @This() = .{ .icon = .information };
-};
-
 arena: std.heap.ArenaAllocator,
 
-window_id: usize,
 handle: HWND,
 
 taskbar: *ITaskbarList3 = undefined,
-onevent: ?OnTaskbarEvent,
 state: ?*anyopaque = null,
 
 image_list: ?ImageList = null,
@@ -306,18 +246,7 @@ buttons: ?[]Button.FlagState = null,
 
 pub const OnTaskbarEvent = *const fn(*EventLoop, *Window, ?*anyopaque, u32) void;
 
-fn handle_command_event(ev: *EventLoop, win: *Window, state: ?*anyopaque, payload: u32) ?QueuedEvent {
-    const this: *const @This() = @ptrCast(@alignCast(state.?));
-
-    if (this.onevent) |onevent| {
-        onevent(ev, win, this.state, payload);
-    }
-
-    return null;
-}
-
 pub const Options = struct {
-    onevent: ?OnTaskbarEvent = null,
     /// Buttons cannot be added or removed later
     ///
     /// Instead set or update a button to be hidden
@@ -326,7 +255,7 @@ pub const Options = struct {
     state: ?*anyopaque,
 };
 
-pub fn attach(allocator: std.mem.Allocator, event_loop: *EventLoop, window: *const Window, options: Options) !*@This() {
+pub fn attach(allocator: std.mem.Allocator, window: usize, options: Options) !*@This() {
     // STA is fine for UI thread
     if (!ok(CoInitializeEx(null, COINIT_APARTMENTTHREADED))) return error.ComInitFailed;
 
@@ -341,30 +270,23 @@ pub fn attach(allocator: std.mem.Allocator, event_loop: *EventLoop, window: *con
     const instance = try allocator.create(@This());
     instance.* = .{
         .arena = std.heap.ArenaAllocator.init(allocator),
-        .window_id = window.id(),
-        .handle = window.handle,
+        .handle = @ptrFromInt(window),
         .taskbar = taskbar,
         .image_list = null,
-        .onevent = options.onevent,
         .state = options.state,
     };
-    errdefer instance.detach(event_loop);
+    errdefer instance.detach();
 
     if (options.buttons) |buttons| {
         try instance.addButtons(buttons);
     }
 
-    // 0x1800 == THUMB menu events
-    try event_loop.addCommand(0x1800, window.id(), &handle_command_event, @ptrCast(instance));
-
     return instance;
 }
 
-pub fn detach(self: *@This(), event_loop: *EventLoop) void {
+pub fn detach(self: *@This()) void {
     defer self.arena.child_allocator.destroy(self);
     defer self.arena.deinit();
-
-    _ = event_loop.removeCommand(0x1800, self.window_id);
 
     _ = self.taskbar.release();
     if (self.image_list) |*il| _ = il.destroy();
@@ -387,12 +309,12 @@ pub fn setProgress(self: *@This(), state: TBPFLAG, completed: u64, total: u64) !
 /// Set the icon used for a specific button
 ///
 /// The index is the same order as what is defined in addButtons
-pub fn updateIcon(self: *@This(), index: usize, icon: Icon) !void {
+pub fn setIcon(self: *@This(), index: usize, icon: Icon) !void {
     if (self.image_list) |*images| {
-        const ico = icon.getHIcon() orelse return error.CreateButtonIcon;
-        defer _ = win32.ui.windows_and_messaging.DestroyIcon(ico);
+        const ico = getHIcon(icon);
+        defer ico.deinit();
 
-        if (images.replaceIcon(@intCast(index), ico) != @as(i32, @intCast(index))) return error.UpdateButtonIcon;
+        if (images.replaceIcon(@intCast(index), ico.handle()) != @as(i32, @intCast(index))) return error.UpdateButtonIcon;
         _ = self.taskbar.setImages(self.handle, images.handle);
         if (!ok(self.taskbar.updateButtons(self.handle, &.{
             .{
@@ -407,7 +329,7 @@ pub fn updateIcon(self: *@This(), index: usize, icon: Icon) !void {
 /// Update the tooltip used for a specific button
 ///
 /// The index is the same order as what is defined in addButtons
-pub fn updateTooltip(self: *@This(), index: usize, tooltip: ?[]const u8) !void {
+pub fn setTooltip(self: *@This(), index: usize, tooltip: ?[]const u8) !void {
     var button: THUMBBUTTON = .{
         .iId = @intCast(index),
         .dwMask = .{ .TOOLTIP = 1 },
@@ -423,7 +345,7 @@ pub fn updateTooltip(self: *@This(), index: usize, tooltip: ?[]const u8) !void {
 /// Update the flags used for a specific button
 ///
 /// The index is the same order as what is defined in addButtons
-pub fn updateFlags(self: *@This(), index: usize, button: Button.Flags) !void {
+pub fn setFlags(self: *@This(), index: usize, button: Button.Flags) !void {
     if (self.buttons) |buttons| {
         if (button.background) |b| buttons[index].background = b;
         if (button.hidden) |h| buttons[index].hidden = h;
@@ -471,10 +393,10 @@ fn addButtons(self: *@This(), buttons: []const Button) !void {
             .dismiss_on_click = button.dismiss_on_click,
         };
 
-        const icon = button.icon.getHIcon() orelse return error.CreateButtonIcon;
-        defer _ = win32.ui.windows_and_messaging.DestroyIcon(icon);
+        const icon = getHIcon(button.icon);
+        defer icon.deinit();
 
-        if (self.image_list.?.replaceIcon(-1, icon) == -1) return error.AppendButtonIcon;
+        if (self.image_list.?.replaceIcon(-1, icon.handle()) == -1) return error.AppendButtonIcon;
 
         thumb_buttons[i] = .{
             .iId = @intCast(i),
@@ -769,7 +691,8 @@ pub fn setJumpList(self: *@This(), list: JumpList) !void {
                 defer allocator.free(name);
 
                 const hr = cdl.AppendCategory(name.ptr, @ptrCast(task_collection));
-                if (!ok(hr)) {
+                if (!ok(hr) and @as(u32, @bitCast(hr)) != 0x80070005) {
+                    std.debug.print("0x{x}\n", .{ @as(u32, @bitCast(hr))});
                     return error.AppendCategory;
                 }
             }

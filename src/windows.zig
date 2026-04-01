@@ -6,16 +6,22 @@ const QueuedEvent = zinit.event.QueuedEvent;
 const Window = zinit.window.Window;
 
 const root = @import("./root.zig");
+const Icon = root.Icon;
 const Info = root.Info;
 const Action = root.Action;
 const Checkable = root.Checkable;
 const Item = root.Item;
 
 const windows = @import("windows");
-const windows_and_messaging = windows.win32.ui.windows_and_messaging;
+const gdi = windows.win32.graphics.gdi;
+const library_loader = windows.win32.system.library_loader;
 const shell = windows.win32.ui.shell;
+const windows_and_messaging = windows.win32.ui.windows_and_messaging;
 
 const HWND = windows.win32.foundation.HWND;
+const HMENU = windows_and_messaging.HMENU;
+const HICON = windows_and_messaging.HICON;
+const HINSTANCE = windows.win32.foundation.HINSTANCE;
 const WM_USER = windows_and_messaging.WM_USER;
 const NOTIFYICONDATAW = shell.NOTIFYICONDATAW;
 
@@ -29,7 +35,61 @@ const NOTIFYICON_VERSION_4 = shell.NOTIFYICON_VERSION_4;
 const CheckMenuItem = windows_and_messaging.CheckMenuItem;
 const CheckMenuRadioItem = windows_and_messaging.CheckMenuRadioItem;
 
-const HMENU = windows_and_messaging.HMENU;
+pub const HIcon = union(enum) {
+    system: ?HICON,
+    resource: ?HICON,
+
+    pub fn handle(self: *const @This()) ?HICON {
+        return switch (self.*) {
+            .system => |h| h,
+            .resource => |h| h,
+        };
+    }
+
+    pub fn deinit(self: *const @This()) void {
+        switch (self.*) {
+            .resource => |h| _ = windows_and_messaging.DestroyIcon(h),
+            else => {}
+        }
+    }
+};
+
+pub fn getHIcon(icon: Icon) HIcon {
+    switch (icon) {
+        .path => |path| {
+            // Buffer of longest allowed windows path
+            var buffer: [260:0]u16 = std.mem.zeroes([260:0]u16);
+            _ = std.unicode.utf8ToUtf16Le(&buffer, path) catch 0;
+            return .{
+                .resource = @ptrCast(windows_and_messaging.LoadImageW(
+                    null,
+                    &buffer,
+                    .ICON,
+                    16,
+                    16,
+                    .{ .LOADFROMFILE = 1, .LOADTRANSPARENT = 1 },
+                ))
+            };
+        },
+        .symbol => |symbol| {
+            const path = switch (symbol) {
+                .application => windows_and_messaging.IDI_APPLICATION,
+                .hand => windows_and_messaging.IDI_HAND,
+                .question => windows_and_messaging.IDI_QUESTION,
+                .exclamation => windows_and_messaging.IDI_EXCLAMATION,
+                .asterisk => windows_and_messaging.IDI_ASTERISK,
+                .winlogo => windows_and_messaging.IDI_WINLOGO,
+                .shield => windows_and_messaging.IDI_SHIELD,
+                .warning => @as([*:0]align(1) const u16, @ptrFromInt(@as(usize, @intCast(windows_and_messaging.IDI_WARNING)))),
+                .@"error" => @as([*:0]align(1) const u16, @ptrFromInt(@as(usize, @intCast(windows_and_messaging.IDI_ERROR)))),
+                .information => @as([*:0]align(1) const u16, @ptrFromInt(@as(usize, @intCast(windows_and_messaging.IDI_INFORMATION)))),
+            };
+            return .{
+                .system = windows_and_messaging.LoadIconW(null, path)
+            };
+        },
+    }
+}
 
 pub const Builder = struct {
     allocator: std.mem.Allocator,
@@ -69,7 +129,8 @@ pub const Builder = struct {
         @memcpy(label, action.label);
         try self.itemToMenu.put(self.allocator, self.count.*, .{
             .id = action.id,
-            .menu = @ptrCast(self.current),
+            .main = @ptrCast(self.current),
+            .context = @ptrCast(self.context),
             .payload = .{ .action = .{ .label = label } },
         });
 
@@ -90,7 +151,8 @@ pub const Builder = struct {
         @memcpy(label, checkable.label);
         try self.itemToMenu.put(self.allocator, self.count.*, .{
             .id = checkable.id,
-            .menu = @ptrCast(self.current),
+            .main = @ptrCast(self.current),
+            .context = @ptrCast(self.context),
             .payload = .{
                 .toggle = .{ .label = label, .state = checkable.default },
             },
@@ -128,7 +190,6 @@ pub const Builder = struct {
         }
 
         if (checked) |idx| {
-            std.debug.print("Selected: {d}\n", .{ idx });
             _ = CheckMenuRadioItem(self.current, @intCast(start), @intCast(end), @intCast(idx), 0x0);
         }
     }
@@ -139,7 +200,8 @@ pub const Builder = struct {
         @memcpy(label, checkable.label);
         try self.itemToMenu.put(self.allocator, self.count.*, .{
             .id = checkable.id,
-            .menu = @ptrCast(self.current),
+            .main = @ptrCast(self.current),
+            .context = @ptrCast(self.context),
             .payload = .{
                 .radio = .{
                     .group = .{ start, end },
@@ -220,20 +282,35 @@ pub const MenuEvent = struct {
         switch (self.info.payload) {
             .toggle => |*ti| {
                 ti.state = !ti.state;
-                _ = CheckMenuItem(@ptrCast(@alignCast(self.info.menu)), self.id, if (ti.state) 0x8 else 0x0);
+                _ = CheckMenuItem(@ptrCast(@alignCast(self.info.main)), self.id, if (ti.state) 0x8 else 0x0);
+                if (self.info.context) |context| {
+                    _ = CheckMenuItem(@ptrCast(@alignCast(context)), self.id, if (ti.state) 0x8 else 0x0);
+                }
             },
             .radio => |r| {
-                _ = CheckMenuRadioItem(@ptrCast(@alignCast(self.info.menu)), @intCast(r.group[0]), @intCast(r.group[1]), self.id, 0x0);
+                _ = CheckMenuRadioItem(@ptrCast(@alignCast(self.info.main)), @intCast(r.group[0]), @intCast(r.group[1]), self.id, 0x0);
+                if (self.info.context) |context| {
+                    _ = CheckMenuRadioItem(@ptrCast(@alignCast(context)), @intCast(r.group[0]), @intCast(r.group[1]), self.id, 0x0);
+                }
             },
             else => {},
         }
+    }
+
+    pub fn into(self: @This(), comptime T: type) T {
+        return switch (@typeInfo(T)) {
+            .@"enum" => @enumFromInt(self.info.id),
+            .int => |i| switch (i.signedness) {
+                .signed => @intCast(@as(i32, @bitCast(self.info.id))),
+                .unsigned => @intCast(self.info.id)
+            },
+            else => @compileError("unsupported payload type")
+        };
     }
 };
 
 pub const Menu = struct {
     arena: std.heap.ArenaAllocator,
-
-    onevent: ?root.OnMenuEvent = null,
 
     main: HMENU = undefined,
     context: HMENU = undefined,
@@ -244,7 +321,6 @@ pub const Menu = struct {
         var instance = try allocator.create(Menu);
         instance.* = .{
             .arena = std.heap.ArenaAllocator.init(allocator),
-            .onevent = menu.onevent,
         };
         errdefer instance.deinit();
 
@@ -283,55 +359,48 @@ pub const Menu = struct {
     ///
     /// *IMPORTANT:* `detachWindow` must be called during cleanup to remove hooks
     /// into the event loop
-    pub fn attach(self: *const @This(), event_loop: *EventLoop, window: *Window) !void {
-        _ = windows_and_messaging.SetMenu(window.handle, self.main);
-        _ = windows_and_messaging.DrawMenuBar(window.handle);
-        try event_loop.addCommand(0, window.id(), &handle_user_event, @ptrCast(@constCast(self)));
+    pub fn attach(self: *const @This(), window: usize) !void {
+        _ = windows_and_messaging.SetMenu(@ptrFromInt(window), self.main);
+        _ = windows_and_messaging.DrawMenuBar(@ptrFromInt(window));
     }
 
-    /// Removes the menu from the specified window if it is attached and calls platform
-    /// specific APIs to remove the menu from the render.
-    pub fn detach(_: *const @This(), event_loop: *EventLoop, window: *Window) void {
-        if (event_loop.removeCommand(0, window.id())) {
-            _ = windows_and_messaging.SetMenu(window.handle, null);
-            _ = windows_and_messaging.DrawMenuBar(window.handle);
-        }
+    /// Removes the menu from the specified window.
+    ///
+    /// On Windows this just sets the window menu to null and re-renders it
+    pub fn detach(_: *const @This(), window: usize) void {
+        _ = windows_and_messaging.SetMenu(@ptrFromInt(window), null);
+        _ = windows_and_messaging.DrawMenuBar(@ptrFromInt(window));
     }
 
-    pub fn popup(self: *const @This(), window: *const Window, x: i32, y: i32) ?MenuEvent {
+    pub fn popup(self: *const @This(), window: usize, x: i32, y: i32) ?MenuEvent {
         // _ = windows_and_messaging.SetForegroundWindow(self.handle);
+        const handle: HWND = @ptrFromInt(window);
         const selected = windows_and_messaging.TrackPopupMenu(
             self.context,
             .{ .RIGHTBUTTON = 1, .RETURNCMD = 1 },
             x,
             y,
             0,
-            window.handle,
+            handle,
             null,
         );
-        _ = windows_and_messaging.PostMessageW(window.handle, windows_and_messaging.WM_NULL, 0, 0);
+        _ = windows_and_messaging.PostMessageW(handle, windows_and_messaging.WM_NULL, 0, 0);
 
-        const id: u32 = @bitCast(selected);
-        if (self.item_to_info.getPtr(id)) |info| {
-            return .{ .id = id, .info = info };
+        return self.transform(@bitCast(selected));
+    }
+
+    pub fn transform(self: *const @This(), id: u32) ?MenuEvent {
+        const i: u32 = @bitCast(id);
+        if (self.item_to_info.getPtr(i)) |info| {
+            return .{ .id = i, .info = info };
         }
         return null;
     }
 
-    pub fn popupAtCursor(self: *const @This(), window: *const Window) ?MenuEvent {
+    pub fn popupAtCursor(self: *const @This(), window: usize) ?MenuEvent {
         var pt: windows.win32.foundation.POINT = undefined;
         _ = windows_and_messaging.GetCursorPos(&pt);
         return self.popup(window, pt.x, pt.y);
-    }
-
-    fn handle_user_event(event_loop: *EventLoop, window: *Window, state: ?*anyopaque, payload: u32) ?QueuedEvent {
-        const this: *const @This() = @ptrCast(@alignCast(state.?));
-        if (this.item_to_info.getPtr(@intCast(payload))) |info| {
-            if (this.onevent) |onevent| {
-                onevent(event_loop, window, .{ .id = payload, .info = info });
-            }
-        }
-        return null;
     }
 };
 
@@ -339,10 +408,16 @@ pub const SystemTray = struct {
     arena: std.heap.ArenaAllocator,
 
     id: u32,
-    onevent: ?root.OnSystemTrayEvent,
-
+    onevent: ?root.SystemTrayEventHandler,
     menu: *Menu = undefined,
+
     tip_wide: ?[:0]const u16 = null,
+
+    title: [:0]const u16 = undefined,
+    class: [:0]const u16 = undefined,
+
+    handle: ?HWND = null,
+    instance: ?HINSTANCE = null,
 
     pub fn init(allocator: std.mem.Allocator, tray: root.SystemTrayOptions) !*@This() {
         var instance = try allocator.create(SystemTray);
@@ -354,28 +429,77 @@ pub const SystemTray = struct {
         };
         errdefer instance.deinit();
 
-        if (tray.tip) |tip| {
-            instance.tip_wide = try std.unicode.utf8ToUtf16LeAllocZ(instance.arena.allocator(), tip);
+        const allo = instance.arena.allocator();
+
+        instance.title = try std.unicode.utf8ToUtf16LeAllocZ(allo, "");
+        errdefer allo.free(instance.title);
+        instance.class = try std.unicode.utf8ToUtf16LeAllocZ(allo, "menu-zig.system-tray");
+        errdefer allo.free(instance.class);
+
+        instance.instance = library_loader.GetModuleHandleW(null);
+        const wnd_class = windows_and_messaging.WNDCLASSW{
+            .lpszClassName = instance.class.ptr,
+
+            .style = windows_and_messaging.WNDCLASS_STYLES{ .HREDRAW = 1, .VREDRAW = 1 },
+            .cbClsExtra = 0,
+            .cbWndExtra = 0,
+            .hIcon = null,
+            .hCursor = null,
+            .hbrBackground = null,
+            .lpszMenuName = null,
+
+            .hInstance = instance.instance,
+            .lpfnWndProc = wndProc, // wndProc,
+        };
+
+        const result = windows_and_messaging.RegisterClassW(&wnd_class);
+        if (result == 0) {
+            return error.SystemCreateWindow;
         }
 
-        return instance;
-    }
+        const window_style = windows_and_messaging.WINDOW_STYLE{
+            .TABSTOP = 1,
+            .GROUP = 1,
+            .THICKFRAME = 1,
+            .SYSMENU = 1,
+            .DLGFRAME = 1,
+            .BORDER = 1,
+        };
 
-    pub fn attach(self: *const @This(), event_loop: *EventLoop, window: *Window) !void {
+        instance.handle = windows_and_messaging.CreateWindowExW(
+            windows_and_messaging.WINDOW_EX_STYLE{},
+            instance.class.ptr,
+            instance.title.ptr,
+            window_style, // style
+            windows_and_messaging.CW_USEDEFAULT,
+            windows_and_messaging.CW_USEDEFAULT, // initial position
+            windows_and_messaging.CW_USEDEFAULT,
+            windows_and_messaging.CW_USEDEFAULT, // initial size
+            null, // Parent
+            null, // Menu
+            instance.instance,
+            @ptrCast(instance), // WM_CREATE lpParam
+        ) orelse return error.SystemCreateWindow;
+
+        const ico = getHIcon(tray.icon);
+        defer ico.deinit();
+
         var nid = std.mem.zeroes(NOTIFYICONDATAW);
         nid.cbSize = @sizeOf(NOTIFYICONDATAW);
-        nid.hWnd = window.handle;
-        nid.uID = WM_USER + self.id;
-        nid.uCallbackMessage = WM_USER + self.id;
+        nid.hWnd = instance.handle;
+        nid.uID = WM_USER + 1;
+        nid.uCallbackMessage = WM_USER + 1;
         nid.uFlags = .{ .MESSAGE = 1, .ICON = 1 };
-        nid.hIcon = Window.getHIcon(window.icon);
+        nid.hIcon = ico.handle();
 
-        if (self.tip_wide) |tip| {
+        if (tray.tip) |tip| {
+            instance.tip_wide = try std.unicode.utf8ToUtf16LeAllocZ(instance.arena.allocator(), tip);
+
             nid.uFlags.TIP = 1;
             nid.uFlags.SHOWTIP = 1;
 
-            const tip_len = @min(tip.len, nid.szTip.len);
-            @memcpy(nid.szTip[0..tip_len], tip[0..tip_len]);
+            const tip_len = @min(instance.tip_wide.?.len, nid.szTip.len);
+            @memcpy(nid.szTip[0..tip_len], instance.tip_wide.?[0..tip_len]);
             nid.szTip[tip_len] = 0;
         }
 
@@ -383,26 +507,19 @@ pub const SystemTray = struct {
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
 
-        try event_loop.addUserCommand(self.id, window.id(), &handle_user_event, @ptrCast(@constCast(self)));
+        return instance;
     }
 
-    pub fn detach(self: *const @This(), event_loop: *EventLoop, window: *Window) void {
-        _ = event_loop.removeUserCommand(self.id, window.id());
+    pub fn setIcon(self: *@This(), icon: Icon) void {
+        const ico = getHIcon(icon);
+        defer ico.deinit();
 
         var nid = std.mem.zeroes(NOTIFYICONDATAW);
         nid.cbSize = @sizeOf(NOTIFYICONDATAW);
-        nid.hWnd = window.handle;
-        nid.uID = WM_USER + self.id;
-        _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-    }
-
-    pub fn updateIcon(self: *@This(), window: *const Window) void {
-        var nid = std.mem.zeroes(NOTIFYICONDATAW);
-        nid.cbSize = @sizeOf(NOTIFYICONDATAW);
-        nid.hWnd = window.handle;
-        nid.uID = WM_USER + self.id;
+        nid.hWnd = self.handle;
+        nid.uID = WM_USER + 1;
         nid.uFlags = .{ .MESSAGE = 1, .ICON = 1 };
-        nid.hIcon = Window.getHIcon(window.icon);
+        nid.hIcon = ico.handle();
 
         if (self.tip_wide) |tip| {
             nid.uFlags.TIP = 1;
@@ -419,21 +536,74 @@ pub const SystemTray = struct {
     pub fn deinit(self: *@This()) void {
         defer self.arena.child_allocator.destroy(self);
         defer self.arena.deinit();
+
+        var nid = std.mem.zeroes(NOTIFYICONDATAW);
+        nid.cbSize = @sizeOf(NOTIFYICONDATAW);
+        nid.hWnd = self.handle;
+        nid.uID = WM_USER + 1;
+        _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+
+        _ = windows_and_messaging.DestroyWindow(self.handle);
     }
 
-    fn handle_user_event(event_loop: *EventLoop, window: *Window, state: ?*anyopaque, payload: u32) ?QueuedEvent {
-        const this: *const @This() = @ptrCast(@alignCast(state.?));
-        if (payload == windows_and_messaging.WM_CONTEXTMENU or payload == windows_and_messaging.WM_RBUTTONUP) {
-            if (this.menu.popupAtCursor(window)) |evt| {
-                if (this.onevent) |onevent| {
-                    onevent(event_loop, window, .{ .select = evt });
+    fn handleEvent(self: *@This(), target: u32) void {
+        if (target == windows_and_messaging.WM_CONTEXTMENU or target == windows_and_messaging.WM_RBUTTONUP) {
+            if (self.menu.popupAtCursor(@intFromPtr(self.handle.?))) |evt| {
+                if (self.onevent) |onevent| {
+                    onevent.handler(onevent.state, .{ .select = evt });
                 }
             }
-        } else if (payload == windows_and_messaging.WM_LBUTTONUP) {
-            if (this.onevent) |onevent| {
-                onevent(event_loop, window, .{ .click = {} });
+        } else if (target == windows_and_messaging.WM_LBUTTONUP) {
+            if (self.onevent) |onevent| {
+                onevent.handler(onevent.state, .{ .click = {} });
             }
         }
-        return null;
     }
 };
+
+fn wndProc(
+    hwnd: HWND,
+    uMsg: u32,
+    wparam: windows.win32.foundation.WPARAM,
+    lparam: windows.win32.foundation.LPARAM,
+) callconv(.winapi) windows.win32.foundation.LRESULT {
+    if (uMsg == windows_and_messaging.WM_CREATE) {
+        // Get CREATESTRUCTW pointer from lparam
+        const lpptr: usize = @intCast(lparam);
+        const create_struct: *windows_and_messaging.CREATESTRUCTA = @ptrFromInt(lpptr);
+
+        // If lpCreateParams exists then assign window data/state
+        if (create_struct.lpCreateParams) |create_params| {
+            // Cast from anyopaque to an expected EventLoop
+            // this includes casting the pointer alignment
+            const event_loop: *EventLoop = @ptrCast(@alignCast(create_params));
+            // Cast pointer to isize for setting data
+            const long_ptr: usize = @intFromPtr(event_loop);
+            const ptr: isize = @intCast(long_ptr);
+            _ = windows_and_messaging.SetWindowLongPtrW(hwnd, windows_and_messaging.GWLP_USERDATA, ptr);
+        }
+    } else {
+        // Get window state/data pointer
+        const ptr = windows_and_messaging.GetWindowLongPtrW(hwnd, windows_and_messaging.GWLP_USERDATA);
+        // Cast int to optional EventLoop pointer
+        const lptr: usize = @intCast(ptr);
+        const system_tray: ?*SystemTray = @ptrFromInt(lptr);
+
+        switch (uMsg) {
+            windows_and_messaging.WM_DESTROY => {
+                _ = windows_and_messaging.DestroyWindow(hwnd);
+                return 0;
+            },
+            windows_and_messaging.WM_USER + 1 => if (system_tray) |systray| {
+                _ = windows_and_messaging.SetForegroundWindow(hwnd);
+                const target: u32 = @bitCast(@as(i32, @intCast(@as(i16, @truncate(lparam)))));
+                systray.handleEvent(target);
+            },
+            else => {},
+        }
+
+        return windows_and_messaging.DefWindowProcW(hwnd, uMsg, wparam, lparam);
+    }
+
+    return 0;
+}

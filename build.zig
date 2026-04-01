@@ -6,7 +6,7 @@ const NAME = "menu_zig";
 const EXAMPLES = "examples";
 
 const examples = [_]Example{
-    .{ .name = "dev", .path = EXAMPLES ++ "/dev.zig" },
+    .{ .name = "menu", .path = EXAMPLES ++ "/menu.zig" },
     .{ .name = "taskbar", .path = EXAMPLES ++ "/taskbar.zig" },
 };
 

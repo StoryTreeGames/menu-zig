@@ -23,10 +23,8 @@ pub const MenuEvent = switch(builtin.target.os.tag) {
     else => @compileError("unsupported platform"),
 };
 
-pub const OnMenuEvent = *const fn (event_loop: *EventLoop, window: *Window, info: MenuEvent) void;
 pub const MenuOptions = struct {
     items: []const Item,
-    onevent: ?OnMenuEvent = null,
 };
 
 pub const SystemTrayEvent = union(enum) {
@@ -34,13 +32,18 @@ pub const SystemTrayEvent = union(enum) {
     select: MenuEvent,
 };
 
-pub const OnSystemTrayEvent = *const fn (event_loop: *EventLoop, window: *Window, event: SystemTrayEvent) void;
+pub const OnSystemTrayEvent = *const fn (state: ?*anyopaque, evt: SystemTrayEvent) void;
+pub const SystemTrayEventHandler = struct {
+    handler: OnSystemTrayEvent,
+    state: ?*anyopaque = null
+};
 pub const SystemTrayOptions = struct {
     id: u32,
     menu: *Menu,
 
+    icon: Icon = .Application,
     tip: ?[]const u8 = null,
-    onevent: ?OnSystemTrayEvent = null,
+    onevent: ?SystemTrayEventHandler = null,
 };
 
 pub const Checkable = struct {
@@ -126,7 +129,8 @@ pub const Id = struct {
 
 pub const Info = struct {
     id: u32,
-    menu: *anyopaque,
+    main: *anyopaque,
+    context: ?*anyopaque,
     payload: Payload,
 
     pub fn isAction(self: *const @This()) bool {
@@ -150,7 +154,9 @@ pub const Info = struct {
     }
 
     pub const Payload = union(enum) {
-        action: struct { label: [:0]const u8 },
+        action: struct {
+            label: [:0]const u8
+        },
         toggle: struct {
             label: [:0]const u8,
             state: bool,
@@ -160,4 +166,38 @@ pub const Info = struct {
             label: [:0]const u8,
         },
     };
+};
+
+
+pub const Icon = union(enum) {
+    symbol: Symbol,
+    path: []const u8,
+
+    pub fn custom(p: []const u8) Icon {
+        return .{ .path = p };
+    }
+
+    pub const Symbol = enum {
+        application,
+        hand,
+        question,
+        exclamation,
+        asterisk,
+        winlogo,
+        shield,
+        warning,
+        @"error",
+        information,
+    };
+
+    pub const Application: @This() = .{ .symbol = .application };
+    pub const Hand: @This() = .{ .symbol = .hand };
+    pub const Question: @This() = .{ .symbol = .question };
+    pub const Exclamation: @This() = .{ .symbol = .exclamation };
+    pub const Asterisk: @This() = .{ .symbol = .asterisk };
+    pub const Winlogo: @This() = .{ .symbol = .winlogo };
+    pub const Shield: @This() = .{ .symbol = .shield };
+    pub const Warning: @This() = .{ .symbol = .warning };
+    pub const Error: @This() = .{ .symbol = .@"error" };
+    pub const Information: @This() = .{ .symbol = .information };
 };
