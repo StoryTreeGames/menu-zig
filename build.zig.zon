@@ -4,14 +4,14 @@
     .fingerprint = 0x596fdeb3a67bd1f0, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
-        .zinit = .{
-            .path = "../zinit",
-            // .url = "git+https://github.com/StoryTreeGames/zinit.git#d8a5212d00be58ae27b51e04c9236f5c533a0f19",
-            // .hash = "storytree_core-0.0.0-czYRF5pAAgB17XcVL06MQUm_5OLpyzcaEpfvWEQay28Q",
-        },
         .windows = .{
             .url = "git+https://github.com/Tired-Fox/windows-zig.git#595ca06555d84dd17386a31fe3b726219035acd9",
             .hash = "windows-0.0.2-kXMVSkjSSgJsHJdOAgdLZIqjGiPCXMMtK9igVwZO7d-9",
+        },
+        .zinit = .{
+            .url = "git+https://github.com/StoryTreeGames/zinit.git#6dd4e072ee1ba9ff680250254db6b6966324a6b0",
+            .hash = "zinit-0.0.0-SrpvJzt1AwAKKR2vcudHH4e5sFGydljC4dI9DDBPQNce",
+            .lazy = true,
         },
     },
     .paths = .{

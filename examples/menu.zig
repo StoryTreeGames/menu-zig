@@ -55,30 +55,31 @@ const App = struct {
 
     pub fn handleUserEvent(event_loop: *EventLoop, evt: UserEvent) void {
         switch (evt.id) {
-            MyUserEvent.ID => switch (evt.into(MyUserEvent)) {
-                .systray_quit => event_loop.closeAll(),
-                .systray_click => std.debug.print("Systray Clicked\n", .{}),
+            SystrayUserEvent.ID => switch (evt.into(SystrayUserEvent)) {
+                .quit => event_loop.closeAll(),
+                .click => std.debug.print("Systray Clicked\n", .{}),
             },
             else => {}
         }
     }
 };
 
-fn systemTrayEvent(s: ?*anyopaque, evt: menu.SystemTrayEvent) void {
-    const el: *EventLoop = @ptrCast(@alignCast(s.?));
+const SystemTrayHandler = struct  {
+    event_loop: *EventLoop,
+    pub fn handler(self: *@This(), evt: menu.SystemTrayEvent) void {
+        switch (evt) {
+            .click => self.event_loop.push(SystrayUserEvent.ID, SystrayUserEvent.click) catch {},
+            .select => |me| {
+                me.select();
 
-    switch (evt) {
-        .click => el.push(MyUserEvent.ID, MyUserEvent.systray_click) catch {},
-        .select => |me| {
-            me.select();
-
-            const selected: SystrayEvent = @enumFromInt(me.info.id);
-            switch (selected) {
-                .quit => el.push(MyUserEvent.ID, MyUserEvent.systray_quit) catch {},
+                const selected: SystrayEvent = @enumFromInt(me.info.id);
+                switch (selected) {
+                    .quit => self.event_loop.push(SystrayUserEvent.ID, SystrayUserEvent.quit) catch {},
+                }
             }
         }
     }
-}
+};
 
 const MenuEvent = enum(u32) {
     toggle_visible,
@@ -95,11 +96,11 @@ const SystrayEvent = enum(u32) {
     quit
 };
 
-const MyUserEvent = enum(u32) {
+const SystrayUserEvent = enum(u32) {
     pub const ID = 1;
 
-    systray_click,
-    systray_quit,
+    click,
+    quit,
 };
 
 pub fn main() !void {
@@ -180,16 +181,15 @@ pub fn main() !void {
         },
     });
     defer systray_menu.deinit();
-    const systray = try menu.SystemTray.init(allocator, .{
-        .id = 1,
-        .tip = "Zig System Tray",
-        .menu = systray_menu,
-        .icon = .custom(path),
-        .onevent = .{
-            .handler = &systemTrayEvent,
-            .state = @ptrCast(event_loop),
-        }
-    });
+    const systray = try menu.SystemTray.initWithHandler(
+        allocator,
+        .{
+            .tip = "Zig System Tray",
+            .menu = systray_menu,
+            .icon = .custom(path),
+        },
+        SystemTrayHandler { .event_loop = event_loop },
+    );
     defer systray.deinit();
 
     const app = App {

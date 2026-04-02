@@ -13,6 +13,17 @@ pub const SystemTray = switch (builtin.target.os.tag) {
     else => @compileError("unsupported platform"),
 };
 
+pub const SystemTrayEvent = union(enum) {
+    click: void,
+    select: MenuEvent,
+};
+
+pub const SystemTrayOptions = struct {
+    tip: ?[]const u8 = null,
+    icon: Icon = .Application,
+    menu: ?*Menu = null,
+};
+
 pub const Menu = switch (builtin.target.os.tag) {
     .windows => @import("./windows.zig").Menu,
     else => @compileError("unsupported platform"),
@@ -25,25 +36,6 @@ pub const MenuEvent = switch(builtin.target.os.tag) {
 
 pub const MenuOptions = struct {
     items: []const Item,
-};
-
-pub const SystemTrayEvent = union(enum) {
-    click: void,
-    select: MenuEvent,
-};
-
-pub const OnSystemTrayEvent = *const fn (state: ?*anyopaque, evt: SystemTrayEvent) void;
-pub const SystemTrayEventHandler = struct {
-    handler: OnSystemTrayEvent,
-    state: ?*anyopaque = null
-};
-pub const SystemTrayOptions = struct {
-    id: u32,
-    menu: *Menu,
-
-    icon: Icon = .Application,
-    tip: ?[]const u8 = null,
-    onevent: ?SystemTrayEventHandler = null,
 };
 
 pub const Checkable = struct {

@@ -46,10 +46,6 @@ const IShellLinkW = win32.ui.shell.IShellLinkW;
 const IID_IShellLinkW = win32.ui.shell.IID_IShellLinkW;
 const CLSID_ShellLink = win32.ui.shell.CLSID_ShellLink;
 
-const Window = @import("zinit").window.Window;
-const EventLoop = @import("zinit").event.EventLoop;
-const QueuedEvent = @import("zinit").event.QueuedEvent;
-
 fn ok(hr: HRESULT) bool {
     return hr >= 0;
 }
@@ -243,8 +239,6 @@ state: ?*anyopaque = null,
 
 image_list: ?ImageList = null,
 buttons: ?[]Button.FlagState = null,
-
-pub const OnTaskbarEvent = *const fn(*EventLoop, *Window, ?*anyopaque, u32) void;
 
 pub const Options = struct {
     /// Buttons cannot be added or removed later

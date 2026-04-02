@@ -1,10 +1,5 @@
 const std = @import("std");
 
-const zinit = @import("zinit");
-const EventLoop = zinit.event.EventLoop;
-const QueuedEvent = zinit.event.QueuedEvent;
-const Window = zinit.window.Window;
-
 const root = @import("./root.zig");
 const Icon = root.Icon;
 const Info = root.Info;
@@ -317,6 +312,13 @@ pub const Menu = struct {
     menus: std.ArrayListUnmanaged(HMENU) = .empty,
     item_to_info: std.AutoArrayHashMapUnmanaged(usize, Info) = .empty,
 
+    /// Create a new menu.
+    ///
+    /// This does not display a menu but just initializes the resources
+    /// needed for the menu.
+    ///
+    /// Instead of changing the items in the menu, the previous menu should
+    /// be de-initialized and a new one should be initialized to replace it.
     pub fn init(allocator: std.mem.Allocator, menu: root.MenuOptions) !*@This() {
         var instance = try allocator.create(Menu);
         instance.* = .{
@@ -357,8 +359,12 @@ pub const Menu = struct {
     /// Attaches the menu to the specified window and calls platform specific APIs
     /// to render the menu.
     ///
-    /// *IMPORTANT:* `detachWindow` must be called during cleanup to remove hooks
-    /// into the event loop
+    /// Most of the time the operating system will cleanup the menu rendered
+    /// when the window it is attached to is destroyed. Call `detach` sooner if you
+    /// want to remove it from the window and not display any menu.
+    ///
+    /// `detach` should be called if the menu calls `deinit` before the window is
+    /// destroyed.
     pub fn attach(self: *const @This(), window: usize) !void {
         _ = windows_and_messaging.SetMenu(@ptrFromInt(window), self.main);
         _ = windows_and_messaging.DrawMenuBar(@ptrFromInt(window));
@@ -366,12 +372,25 @@ pub const Menu = struct {
 
     /// Removes the menu from the specified window.
     ///
-    /// On Windows this just sets the window menu to null and re-renders it
+    /// This does not free allocated menu resources. It will
+    /// only remove it from the attached window which will stop
+    /// rendering it.
     pub fn detach(_: *const @This(), window: usize) void {
         _ = windows_and_messaging.SetMenu(@ptrFromInt(window), null);
         _ = windows_and_messaging.DrawMenuBar(@ptrFromInt(window));
     }
 
+    /// Transform an event id into the menu specific event
+    pub fn transform(self: *const @This(), id: u32) ?MenuEvent {
+        const i: u32 = @bitCast(id);
+        if (self.item_to_info.getPtr(i)) |info| {
+            return .{ .id = i, .info = info };
+        }
+        return null;
+    }
+
+    /// Show the menu as a popup context menu at the specified location for the
+    /// given window.
     pub fn popup(self: *const @This(), window: usize, x: i32, y: i32) ?MenuEvent {
         // _ = windows_and_messaging.SetForegroundWindow(self.handle);
         const handle: HWND = @ptrFromInt(window);
@@ -389,14 +408,8 @@ pub const Menu = struct {
         return self.transform(@bitCast(selected));
     }
 
-    pub fn transform(self: *const @This(), id: u32) ?MenuEvent {
-        const i: u32 = @bitCast(id);
-        if (self.item_to_info.getPtr(i)) |info| {
-            return .{ .id = i, .info = info };
-        }
-        return null;
-    }
-
+    /// Show the menu as a popup context menu where the cursor is currently
+    /// located for the specified window.
     pub fn popupAtCursor(self: *const @This(), window: usize) ?MenuEvent {
         var pt: windows.win32.foundation.POINT = undefined;
         _ = windows_and_messaging.GetCursorPos(&pt);
@@ -404,12 +417,16 @@ pub const Menu = struct {
     }
 };
 
+pub const SystemTrayEventHandler = struct {
+    handler: *const fn (state: *anyopaque, evt: root.SystemTrayEvent) void,
+    state: *anyopaque,
+};
+
 pub const SystemTray = struct {
     arena: std.heap.ArenaAllocator,
 
-    id: u32,
-    onevent: ?root.SystemTrayEventHandler,
-    menu: *Menu = undefined,
+    menu: ?*Menu = null,
+    event_handler: ?SystemTrayEventHandler = null,
 
     tip_wide: ?[:0]const u16 = null,
 
@@ -419,12 +436,71 @@ pub const SystemTray = struct {
     handle: ?HWND = null,
     instance: ?HINSTANCE = null,
 
+    /// Initialize a system tray with a handler struct instance that is called when system tray events occur
+    ///
+    /// Ownership of the handler is transfered to the system tray and it is assigned to allocated memory.
+    ///
+    /// Use this when you want to handle the events assigning any state required to the handler instance.
+    ///
+    /// # Example
+    ///
+    /// ```zig
+    /// SystemTray.initWithHandler(allocator, .{ .menu = menu }, struct {
+    ///     event_loop: *EventLoop,
+    ///     pub fn handler(self: *@This(), event: SystemTrayEvent) void {
+    ///         // ...
+    ///     }
+    /// }{ .event_loop = event_loop })
+    /// ```
+    ///
+    /// or
+    ///
+    /// ```zig
+    /// const SystemTrayHandler = struct {
+    ///     event_loop: *EventLoop,
+    ///     pub fn handler(self: *@This(), event: SystemTrayEvent) void {
+    ///         // ...
+    ///     }
+    /// }
+    ///
+    /// SystemTray.initWithHandler(allocator, .{ .menu = menu }, SystemTrayHandler{ .event_loop = event_loop })
+    /// ```
+    pub fn initWithHandler(allocator: std.mem.Allocator, tray: root.SystemTrayOptions, handler: anytype) !*@This() {
+        const T = @TypeOf(handler);
+        switch (@typeInfo(T)) {
+            .@"struct" => if (!@hasDecl(T, "handler")) {
+                @compileError("missing event handler method");
+            },
+            else => @compileError("handler must be a struct")
+        }
+
+        const Handler = &(struct {
+            pub fn onevent(state: *anyopaque, event: root.SystemTrayEvent) void {
+                const this: *T = @ptrCast(@alignCast(state));
+                @call(.auto, T.handler, .{ this, event });
+            }
+        }).onevent;
+
+        const self = try @This().init(allocator, tray);
+        const handlerInstance = try self.arena.allocator().create(T);
+        handlerInstance.* = handler;
+
+        self.event_handler = .{
+            .handler = Handler,
+            .state = @ptrCast(handlerInstance)
+        };
+
+        return self;
+    }
+
+    /// Initialize the system tray.
+    ///
+    /// This will not handle any events as no event handler is initialized. Instead
+    /// it is used to only display the system tray icon.
     pub fn init(allocator: std.mem.Allocator, tray: root.SystemTrayOptions) !*@This() {
         var instance = try allocator.create(SystemTray);
         instance.* = .{
             .arena = std.heap.ArenaAllocator.init(allocator),
-            .id = tray.id,
-            .onevent = tray.onevent,
             .menu = tray.menu,
         };
         errdefer instance.deinit();
@@ -510,6 +586,7 @@ pub const SystemTray = struct {
         return instance;
     }
 
+    /// Set the system tray's icon
     pub fn setIcon(self: *@This(), icon: Icon) void {
         const ico = getHIcon(icon);
         defer ico.deinit();
@@ -533,6 +610,7 @@ pub const SystemTray = struct {
         _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 
+    /// Remove the system tray and cleanup all resources associated with it
     pub fn deinit(self: *@This()) void {
         defer self.arena.child_allocator.destroy(self);
         defer self.arena.deinit();
@@ -548,14 +626,16 @@ pub const SystemTray = struct {
 
     fn handleEvent(self: *@This(), target: u32) void {
         if (target == windows_and_messaging.WM_CONTEXTMENU or target == windows_and_messaging.WM_RBUTTONUP) {
-            if (self.menu.popupAtCursor(@intFromPtr(self.handle.?))) |evt| {
-                if (self.onevent) |onevent| {
-                    onevent.handler(onevent.state, .{ .select = evt });
+            if (self.menu) |menu| {
+                if (menu.popupAtCursor(@intFromPtr(self.handle.?))) |evt| {
+                    if (self.event_handler) |eh| {
+                        eh.handler(eh.state, .{ .select = evt });
+                    }
                 }
             }
         } else if (target == windows_and_messaging.WM_LBUTTONUP) {
-            if (self.onevent) |onevent| {
-                onevent.handler(onevent.state, .{ .click = {} });
+            if (self.event_handler) |eh| {
+                eh.handler(eh.state, .{ .click = {} });
             }
         }
     }
@@ -576,7 +656,7 @@ fn wndProc(
         if (create_struct.lpCreateParams) |create_params| {
             // Cast from anyopaque to an expected EventLoop
             // this includes casting the pointer alignment
-            const event_loop: *EventLoop = @ptrCast(@alignCast(create_params));
+            const event_loop: *SystemTray = @ptrCast(@alignCast(create_params));
             // Cast pointer to isize for setting data
             const long_ptr: usize = @intFromPtr(event_loop);
             const ptr: isize = @intCast(long_ptr);

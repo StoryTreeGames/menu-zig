@@ -17,21 +17,10 @@ pub fn build(b: *std.Build) !void {
     var deps: std.ArrayList(std.Build.Module.Import) = .empty;
     defer deps.deinit(b.allocator);
 
-    const zinit_dep = b.dependency("zinit", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const zinit = zinit_dep.module("zinit");
-    try deps.append(b.allocator, .{ .name = "zinit", .module = zinit });
-
     const mod = b.addModule("menu_zig", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zinit", .module = zinit }
-        }
     });
 
     switch (builtin.target.os.tag) {
@@ -79,12 +68,21 @@ pub fn addExample(
     system_libraries: []const std.meta.Tuple(&.{ []const u8, Tag }),
     assets_dir: ?*std.Build.Step,
 ) void {
+    const estep = b.step("example-" ++ example.name, "Run example-" ++ example.name);
+
     const exe = b.addExecutable(.{ .name = example.name, .root_module = b.createModule(.{
         .root_source_file = b.path(example.path),
         .target = target,
         .optimize = optimize,
         .imports = imports,
     }) });
+
+    if (b.lazyDependency("zinit", .{
+        .target = target,
+        .optimize = optimize,
+    })) |zinit_dep| {
+        exe.root_module.addImport("zinit", zinit_dep.module("zinit"));
+    }
 
     // exe.addWin32ResourceFile(.{ .file = b.path("app.rc") });
 
@@ -107,6 +105,5 @@ pub fn addExample(
         ecmd.addArgs(args);
     }
 
-    const estep = b.step("example-" ++ example.name, "Run example-" ++ example.name);
     estep.dependOn(&ecmd.step);
 }
