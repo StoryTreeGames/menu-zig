@@ -2,7 +2,7 @@ const std = @import("std");
 const Tag = std.Target.Os.Tag;
 const builtin = @import("builtin");
 
-const NAME = "menu_zig";
+const NAME = "menu";
 const EXAMPLES = "examples";
 
 const examples = [_]Example{
@@ -68,7 +68,7 @@ pub fn addExample(
     system_libraries: []const std.meta.Tuple(&.{ []const u8, Tag }),
     assets_dir: ?*std.Build.Step,
 ) void {
-    const estep = b.step("example-" ++ example.name, "Run example-" ++ example.name);
+    const estep = b.step("run-" ++ example.name, "Run example " ++ example.name);
 
     const exe = b.addExecutable(.{ .name = example.name, .root_module = b.createModule(.{
         .root_source_file = b.path(example.path),

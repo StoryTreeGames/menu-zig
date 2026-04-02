@@ -1,8 +1,8 @@
 .{
-    .name = .menu_zig,
+    .name = .menu,
     .version = "0.0.0",
-    .fingerprint = 0x596fdeb3a67bd1f0, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
+    .fingerprint = 0x7d053a936c9c9c88, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .windows = .{
             .url = "git+https://github.com/Tired-Fox/windows-zig.git#595ca06555d84dd17386a31fe3b726219035acd9",

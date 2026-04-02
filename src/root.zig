@@ -14,7 +14,7 @@ pub const SystemTray = switch (builtin.target.os.tag) {
 };
 
 pub const SystemTrayEvent = union(enum) {
-    click: void,
+    click: enum { left, right },
     select: MenuEvent,
 };
 
@@ -43,7 +43,7 @@ pub const Checkable = struct {
     label: []const u8,
     default: bool = false,
 
-    pub fn radio(comptime id: anytype, label: []const u8, default: bool) @This() {
+    pub fn radio(id: anytype, label: []const u8, default: bool) @This() {
         return .{
             .id = Id.of(id),
             .label = label,
@@ -69,7 +69,7 @@ pub const Item = union(enum) {
     menu_item: SubMenu,
     radio_group_item: []const Checkable,
 
-    pub fn action(comptime id: anytype, label: []const u8) @This() {
+    pub fn action(id: anytype, label: []const u8) @This() {
         return .{
             .action_item = .{
                 .id = Id.of(id),
@@ -78,7 +78,7 @@ pub const Item = union(enum) {
         };
     }
 
-    pub fn toggle(comptime id: anytype, label: []const u8, default: bool) @This() {
+    pub fn toggle(id: anytype, label: []const u8, default: bool) @This() {
         return .{
             .toggle_item = .{
                 .id = Id.of(id),
@@ -103,7 +103,7 @@ pub const Item = union(enum) {
 };
 
 pub const Id = struct {
-    pub fn of(comptime kind: anytype) u32 {
+    pub fn of(kind: anytype) u32 {
         const info = @typeInfo(@TypeOf(kind));
 
         return switch (info) {
@@ -138,7 +138,7 @@ pub const Info = struct {
     }
 
     pub fn label(self: *const @This()) [:0]const u8 {
-        return switch (self) {
+        return switch (self.payload) {
             .action => |a| a.label,
             .toggle => |a| a.label,
             .radio => |a| a.label,

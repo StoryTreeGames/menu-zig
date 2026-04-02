@@ -1,6 +1,6 @@
 const std = @import("std");
 const zinit = @import("zinit");
-const menu = @import("menu_zig");
+const menu = @import("menu");
 
 const EventLoop = zinit.event.EventLoop;
 const WindowEvent = zinit.event.WindowEvent;

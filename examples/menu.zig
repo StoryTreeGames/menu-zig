@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const menu = @import("menu_zig");
+const menu = @import("menu");
 
 const zinit = @import("zinit");
 
@@ -16,7 +16,7 @@ const App = struct {
 
     systray: *menu.SystemTray,
 
-    fn handle_menu(el: *EventLoop, w: *Window, selected: MenuEvent) void {
+    pub fn handleMenu(el: *EventLoop, w: *Window, selected: MenuEvent) void {
         switch (selected) {
             .quit => el.closeWindow(w.id()),
             .toggle_visible => switch(w.visibility()) {
@@ -37,15 +37,14 @@ const App = struct {
                     if (self.context_menu.popupAtCursor(window.id())) |e| {
                         e.select();
                         const selected: MenuEvent = @enumFromInt(e.info.id);
-                        std.debug.print("{t}\n", .{ selected });
-                        @This().handle_menu(event_loop, window, selected);
+                        @This().handleMenu(event_loop, window, selected);
                     }
                 }
             },
             .menu => |me| switch (me.kind) {
                 .window => if (self.window_menu.transform(me.target)) |e| {
                     e.select();
-                    @This().handle_menu(event_loop, window, e.into(MenuEvent));
+                    @This().handleMenu(event_loop, window, e.into(MenuEvent));
                 },
                 else => {}
             },
@@ -65,17 +64,56 @@ const App = struct {
 };
 
 const SystemTrayHandler = struct  {
+    allocator: std.mem.Allocator,
     event_loop: *EventLoop,
-    pub fn handler(self: *@This(), evt: menu.SystemTrayEvent) void {
+    pub fn handler(self: *@This(), systray: *const menu.SystemTray, evt: menu.SystemTrayEvent) void {
         switch (evt) {
-            .click => self.event_loop.push(SystrayUserEvent.ID, SystrayUserEvent.click) catch {},
-            .select => |me| {
-                me.select();
+            .click => |ce| switch (ce) {
+                .left => self.event_loop.push(SystrayUserEvent.ID, SystrayUserEvent.click) catch {},
+                .right => {
+                    var arena = std.heap.ArenaAllocator.init(self.allocator);
+                    defer arena.deinit();
+                    const allocator = arena.allocator();
 
-                const selected: SystrayEvent = @enumFromInt(me.info.id);
-                switch (selected) {
-                    .quit => self.event_loop.push(SystrayUserEvent.ID, SystrayUserEvent.quit) catch {},
+                    var menu_items: std.ArrayList(menu.Item) = .empty;
+                    for (self.event_loop.windows.values(), 0..) |window, i| {
+                        const idx = i + 1;
+                        const offset = 100 * idx;
+                        const label: [:0]const u8 = std.unicode.utf16LeToUtf8AllocZ(allocator, window.title[0..]) catch "Window X";
+
+                        // Need to allocate so the stack doesn't change it's value
+                        // on each iteration causing bad data to occur
+                        const items = allocator.alloc(menu.Item, 3) catch continue;
+                        items[0] = .action(
+                            offset + @intFromEnum(MenuEvent.toggle_visible),
+                            if (window.visibility() == .hidden) "Show" else "Hide"
+                        );
+                        items[1] = .separator;
+                        items[2] = .action(offset + @intFromEnum(MenuEvent.quit), "Close");
+                        menu_items.append(allocator, .submenu(label, items)) catch continue;
+                    }
+                    menu_items.append(allocator, .action(MenuEvent.quit, "Quit")) catch {};
+
+                    const dynamic_menu = menu.Menu.init(allocator, .{
+                        .items = menu_items.items
+                    }) catch return;
+                    defer dynamic_menu.deinit();
+
+                    if (systray.popover(dynamic_menu)) |me| {
+                        // Window specific event
+                        if (@divFloor(me.info.id, 100) > 0) {
+                            const wid = @as(usize, @intCast(@divFloor(me.info.id, 100))) -| 1;
+                            const window = self.event_loop.windows.values()[wid];
+                            const id: MenuEvent = @enumFromInt(me.info.id % 100);
+                            App.handleMenu(self.event_loop, window, id);
+                        } else if (me.into(MenuEvent) == .quit) {
+                            self.event_loop.closeAll();
+                        }
+                    }
                 }
+            },
+            else => {
+                // `.select` is never an option since `menu` was never assigned to the systray
             }
         }
     }
@@ -185,10 +223,10 @@ pub fn main() !void {
         allocator,
         .{
             .tip = "Zig System Tray",
-            .menu = systray_menu,
+            // .menu = systray_menu,
             .icon = .custom(path),
         },
-        SystemTrayHandler { .event_loop = event_loop },
+        SystemTrayHandler { .event_loop = event_loop, .allocator = allocator },
     );
     defer systray.deinit();
 

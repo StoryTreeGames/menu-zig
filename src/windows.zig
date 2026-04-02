@@ -94,14 +94,14 @@ pub const Builder = struct {
     current: HMENU,
 
     menus: *std.ArrayListUnmanaged(HMENU),
-    itemToMenu: *std.AutoArrayHashMapUnmanaged(usize, Info),
+    itemToInfo: *std.AutoArrayHashMapUnmanaged(usize, Info),
 
     pub fn sub(self: *@This(), inner: HMENU) @This() {
         return .{
             .allocator = self.allocator,
             .count = self.count,
             .menus = self.menus,
-            .itemToMenu = self.itemToMenu,
+            .itemToInfo = self.itemToInfo,
             .current = inner,
         };
     }
@@ -122,7 +122,7 @@ pub const Builder = struct {
         self.count.* += 1;
         const label = try self.allocator.allocSentinel(u8, action.label.len, 0);
         @memcpy(label, action.label);
-        try self.itemToMenu.put(self.allocator, self.count.*, .{
+        try self.itemToInfo.put(self.allocator, self.count.*, .{
             .id = action.id,
             .main = @ptrCast(self.current),
             .context = @ptrCast(self.context),
@@ -144,7 +144,7 @@ pub const Builder = struct {
         self.count.* += 1;
         const label = try self.allocator.allocSentinel(u8, checkable.label.len, 0);
         @memcpy(label, checkable.label);
-        try self.itemToMenu.put(self.allocator, self.count.*, .{
+        try self.itemToInfo.put(self.allocator, self.count.*, .{
             .id = checkable.id,
             .main = @ptrCast(self.current),
             .context = @ptrCast(self.context),
@@ -193,7 +193,7 @@ pub const Builder = struct {
         self.count.* += 1;
         const label = try self.allocator.allocSentinel(u8, checkable.label.len, 0);
         @memcpy(label, checkable.label);
-        try self.itemToMenu.put(self.allocator, self.count.*, .{
+        try self.itemToInfo.put(self.allocator, self.count.*, .{
             .id = checkable.id,
             .main = @ptrCast(self.current),
             .context = @ptrCast(self.context),
@@ -337,7 +337,7 @@ pub const Menu = struct {
             .context = instance.context,
             .current = instance.main,
             .menus = &instance.menus,
-            .itemToMenu = &instance.item_to_info,
+            .itemToInfo = &instance.item_to_info,
             .count = &count,
         };
 
@@ -382,9 +382,8 @@ pub const Menu = struct {
 
     /// Transform an event id into the menu specific event
     pub fn transform(self: *const @This(), id: u32) ?MenuEvent {
-        const i: u32 = @bitCast(id);
-        if (self.item_to_info.getPtr(i)) |info| {
-            return .{ .id = i, .info = info };
+        if (self.item_to_info.getPtr(id)) |info| {
+            return .{ .id = id, .info = info };
         }
         return null;
     }
@@ -418,7 +417,7 @@ pub const Menu = struct {
 };
 
 pub const SystemTrayEventHandler = struct {
-    handler: *const fn (state: *anyopaque, evt: root.SystemTrayEvent) void,
+    handler: *const fn (state: *anyopaque, tray: *const SystemTray, evt: root.SystemTrayEvent) void,
     state: *anyopaque,
 };
 
@@ -447,7 +446,7 @@ pub const SystemTray = struct {
     /// ```zig
     /// SystemTray.initWithHandler(allocator, .{ .menu = menu }, struct {
     ///     event_loop: *EventLoop,
-    ///     pub fn handler(self: *@This(), event: SystemTrayEvent) void {
+    ///     pub fn handler(self: *@This(), tray: *const SystemTray, event: SystemTrayEvent) void {
     ///         // ...
     ///     }
     /// }{ .event_loop = event_loop })
@@ -458,7 +457,7 @@ pub const SystemTray = struct {
     /// ```zig
     /// const SystemTrayHandler = struct {
     ///     event_loop: *EventLoop,
-    ///     pub fn handler(self: *@This(), event: SystemTrayEvent) void {
+    ///     pub fn handler(self: *@This(), tray: *const SystemTray, event: SystemTrayEvent) void {
     ///         // ...
     ///     }
     /// }
@@ -475,9 +474,9 @@ pub const SystemTray = struct {
         }
 
         const Handler = &(struct {
-            pub fn onevent(state: *anyopaque, event: root.SystemTrayEvent) void {
+            pub fn onevent(state: *anyopaque, systray: *const SystemTray, event: root.SystemTrayEvent) void {
                 const this: *T = @ptrCast(@alignCast(state));
-                @call(.auto, T.handler, .{ this, event });
+                @call(.auto, T.handler, .{ this, systray, event });
             }
         }).onevent;
 
@@ -610,6 +609,11 @@ pub const SystemTray = struct {
         _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
     }
 
+    /// Run `popoverAtCursor` for the provided menu on the SystemTray's window
+    pub fn popover(self: *const @This(), menu: *const Menu) ?MenuEvent {
+        return menu.popupAtCursor(@intFromPtr(self.handle));
+    }
+
     /// Remove the system tray and cleanup all resources associated with it
     pub fn deinit(self: *@This()) void {
         defer self.arena.child_allocator.destroy(self);
@@ -629,13 +633,15 @@ pub const SystemTray = struct {
             if (self.menu) |menu| {
                 if (menu.popupAtCursor(@intFromPtr(self.handle.?))) |evt| {
                     if (self.event_handler) |eh| {
-                        eh.handler(eh.state, .{ .select = evt });
+                        eh.handler(eh.state, self, .{ .select = evt });
                     }
                 }
+            } else if (self.event_handler) |eh| {
+                eh.handler(eh.state, self, .{ .click = .right });
             }
         } else if (target == windows_and_messaging.WM_LBUTTONUP) {
             if (self.event_handler) |eh| {
-                eh.handler(eh.state, .{ .click = {} });
+                eh.handler(eh.state, self, .{ .click = .left });
             }
         }
     }
